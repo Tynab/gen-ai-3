@@ -1,0 +1,27 @@
+# -*- coding: utf-8 -*-
+# (dòng trên bắt buộc: pip cũ trên Windows đọc file bằng cp1252 nếu thiếu khai báo,
+#  sẽ vỡ vì comment tiếng Việt trong file này)
+#
+# Pin đúng phiên bản môi trường khóa học đang chạy — KHÔNG nâng cấp tùy tiện:
+# LangChain 0.3+/1.x đổi API, code bài học sẽ không còn tương thích.
+#
+# Lưu ý: cố tình KHÔNG dùng metapackage `langchain` — code chỉ import
+# langchain_core / langchain_community / langchain_openai / langchain_groq,
+# và langchain 0.1.0 ghim langsmith<0.1 xung đột với langchain-core 0.1.53
+# (pip mới sẽ báo ResolutionImpossible nếu cài chung).
+langchain-core==0.1.53
+langchain-community==0.0.38
+langchain-openai==0.0.2
+langchain-groq==0.0.1
+langsmith==0.1.147
+openai==1.109.1
+groq==0.37.1
+tiktoken==0.5.2
+python-dotenv==1.2.2
+streamlit==1.59.0
+
+# Notebook (chạy qua kernel của editor, ví dụ VS Code)
+ipykernel==7.3.0
+
+# Test
+pytest==9.1.1

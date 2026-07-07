@@ -1,2 +1,9 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Chuẩn hóa: mọi file text luôn dùng LF — cả khi lưu trong repo lẫn khi checkout,
+# bất kể máy nào set core.autocrlf=true (mặc định của Git for Windows).
+# Nếu chỉ dùng "text=auto" (không pin eol) thì EOL lúc checkout phụ thuộc
+# core.autocrlf của từng máy, gây cảnh báo "change in line endings" không thật.
+* text=auto eol=lf
+
+# Script Windows vẫn cần CRLF (một số công cụ/cmd.exe cũ đòi hỏi CRLF cho .bat)
+*.bat text eol=crlf
+*.ps1 text eol=crlf
