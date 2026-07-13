@@ -9,9 +9,10 @@ App gom kiến thức từ hai notebook của bài học (``intro_to_langchain.i
 - **Memory Viewer**: xem và export JSON lịch sử đã lưu của từng session.
 - **Notebook Map**: liên kết kiến thức notebook với từng phần của app.
 
-Provider "Demo" là mặc định, chạy offline không cần API key; OpenAI/Groq cần
-key trong file ``.env``. Code chủ đích bám API LangChain 0.1.x của khóa học
-(kể cả ``RunnableWithMessageHistory`` đã deprecated) — không modernize.
+Provider "Demo" là mặc định, chạy offline không cần API key; OpenAI/Groq cần key
+trong file ``.env``. Tên model cũng đọc từ ``.env`` — trong code KHÔNG hardcode
+model nào. Code chủ đích bám API LangChain 0.1.x của khóa học (kể cả
+``RunnableWithMessageHistory`` đã deprecated) — không modernize.
 """
 from __future__ import annotations
 
@@ -51,18 +52,33 @@ DEFAULT_SYSTEM_PROMPT = (
     "Khi người dùng hỏi bằng tiếng Việt, hãy trả lời bằng tiếng Việt. "
     "Nếu có lịch sử hội thoại, hãy tận dụng nó để giữ mạch ngữ cảnh."
 )
-# Nguồn sự thật duy nhất cho ánh xạ provider -> biến môi trường chứa API key.
-PROVIDER_ENV_KEYS = {"OpenAI": "OPENAI_API_KEY", "Groq": "GROQ_API_KEY"}
+DEMO_MODEL = "demo-langchain"
+
+# Nguồn sự thật duy nhất cho ánh xạ provider -> (biến chứa API key, biến chứa tên model).
+# Thêm provider mới thì chỉ sửa ở đây, không phải đi vá từng hàm.
+PROVIDER_ENV = {
+    "OpenAI": ("OPENAI_API_KEY", "OPENAI_MODEL"),
+    "Groq": ("GROQ_API_KEY", "GROQ_MODEL"),
+}
+PROVIDER_OPTIONS = ["Demo", *PROVIDER_ENV]
+# Giá trị hợp lệ của LANGCHAIN_APP_PROVIDER (viết thường) -> tên provider trong UI.
+PROVIDER_ALIASES = {name.lower(): name for name in PROVIDER_OPTIONS}
+
+# Họ model chỉ chấp nhận temperature = 1 (xem supports_temperature).
+FIXED_TEMPERATURE_FAMILIES = ("gpt-5", "o1", "o3", "o4")
+FIXED_TEMPERATURE = 1.0
+
 # Ánh xạ kiến thức từ notebook sang phần tương ứng trong app (tab Notebook Map).
+# Tên file phải khớp file thật trong repo — test pin điều này.
 NOTEBOOK_MAP = [
     {
         "notebook": "intro_to_langchain.ipynb",
-        "concepts": "ChatOpenAI, ChatPromptTemplate, chain cơ bản.",
+        "concepts": "ChatOpenAI, ChatPromptTemplate, chain cơ bản (LCEL).",
         "app_section": "Chat Lab và Prompt Template.",
     },
     {
         "notebook": "intro_to_groq.ipynb",
-        "concepts": "ChatGroq, ChatPromptTemplate, MessagesPlaceholder, RunnableWithMessageHistory.",
+        "concepts": "ChatGroq, MessagesPlaceholder, RunnableWithMessageHistory.",
         "app_section": "Chat có memory theo session_id.",
     },
 ]
@@ -82,8 +98,7 @@ def get_history(session_id: str) -> InMemoryChatMessageHistory:
     Đây là ``get_session_history`` mà RunnableWithMessageHistory sẽ gọi
     với ``config["configurable"]["session_id"]``.
     """
-    histories: dict[str,
-                    InMemoryChatMessageHistory] = st.session_state.histories
+    histories: dict[str, InMemoryChatMessageHistory] = st.session_state.histories
     if session_id not in histories:
         histories[session_id] = InMemoryChatMessageHistory()
     return histories[session_id]
@@ -113,22 +128,237 @@ def message_text(content: Any) -> str:
         parts = []
         for item in content:
             if isinstance(item, dict):
-                parts.append(
-                    str(item.get("text") or item.get("content") or item))
+                parts.append(str(item.get("text") or item.get("content") or item))
             else:
                 parts.append(str(item))
         return "\n".join(parts)
     return str(content)
 
 
+def provider_is_ready(provider: str) -> bool:
+    """Provider dùng được chưa? Demo luôn sẵn sàng; OpenAI/Groq cần key trong .env."""
+    env = PROVIDER_ENV.get(provider)
+    return env is None or bool(os.getenv(env[0]))
+
+
+def ensure_provider_ready(provider: str) -> bool:
+    """Guard dùng chung cho các tab: báo lỗi UI nếu provider thiếu API key."""
+    if provider_is_ready(provider):
+        return True
+    st.error("Provider hiện tại chưa có API key trong .env.")
+    return False
+
+
+def report_model_error(exc: Exception) -> None:
+    """Hiển thị lỗi gọi model theo một định dạng thống nhất giữa các tab."""
+    st.error(f"Không gọi được model: {exc}")
+
+
+def default_provider() -> str:
+    """Đọc provider mặc định từ LANGCHAIN_APP_PROVIDER; không hợp lệ thì về Demo."""
+    env_provider = os.getenv("LANGCHAIN_APP_PROVIDER", "Demo").strip().lower()
+    return PROVIDER_ALIASES.get(env_provider, "Demo")
+
+
+def default_model(provider: str) -> str:
+    """Tên model đọc thẳng từ .env — KHÔNG có fallback hardcode trong code.
+
+    Thiếu biến môi trường thì trả về rỗng, để build_model báo lỗi nêu đúng tên biến
+    thay vì âm thầm gọi API bằng một model mà người dùng không hề chọn.
+    """
+    env = PROVIDER_ENV.get(provider)
+    if env is None:
+        return DEMO_MODEL
+    return os.getenv(env[1], "")
+
+
+def supports_temperature(model_name: str) -> bool:
+    """Model có nhận temperature tùy chỉnh không?
+
+    Họ gpt-5 và o-series chỉ chấp nhận temperature = 1; giá trị khác thì API trả 400
+    "Unsupported value: 'temperature'". Bỏ hẳn tham số cũng KHÔNG cứu được, vì
+    langchain-openai 0.0.2 luôn gửi kèm temperature mặc định 0.7 của chính nó — nên
+    bắt buộc phải ép đúng 1 (xem effective_temperature).
+
+    So khớp theo ranh giới họ model chứ không phải prefix thô: "gpt-5" và "gpt-5-mini"
+    bị khóa, còn "gpt-5x-cua-ai-do" thì không dính oan. Tên có namespace kiểu
+    "openai/o1" cũng được nhận ra (Groq phục vụ model OpenAI dưới dạng này).
+    """
+    name = model_name.strip().lower().split("/")[-1]
+    return not any(
+        name == family or name.startswith(f"{family}-")
+        for family in FIXED_TEMPERATURE_FAMILIES
+    )
+
+
+def effective_temperature(model_name: str, temperature: float) -> float:
+    """Temperature thật sự gửi đi: model bị khóa thì ép về 1, còn lại giữ nguyên.
+
+    Đặt ở đây (trên chỗ rẽ nhánh provider) để không thể xảy ra chuyện một provider
+    áp luật còn provider kia quên — đây là thuộc tính của MODEL, không phải của nhánh.
+    UI cũng gọi hàm này nên slider luôn hiển thị đúng giá trị đang chạy.
+    """
+    return temperature if supports_temperature(model_name) else FIXED_TEMPERATURE
+
+
+def demo_reply(prompt_value: Any) -> AIMessage:
+    """Giả lập câu trả lời của model cho provider Demo (offline, không cần key).
+
+    Đếm số lượt user có trong prompt để minh họa việc lịch sử đã thật sự được
+    truyền qua ``MessagesPlaceholder`` khi memory bật.
+    """
+    messages = prompt_value.to_messages()
+    user_messages = [
+        message_text(msg.content) for msg in messages if isinstance(msg, HumanMessage)
+    ]
+    latest = user_messages[-1] if user_messages else ""
+    remembered = max(len(user_messages) - 1, 0)
+    if remembered:
+        content = (
+            f"Demo mode: mình nhận câu mới là: \"{latest}\".\n\n"
+            f"Trong prompt hiện tại có {remembered} lượt người dùng trước đó, nên đây là "
+            "ví dụ memory đang được truyền qua `MessagesPlaceholder`."
+        )
+    else:
+        content = (
+            f"Demo mode: mình nhận câu này độc lập: \"{latest}\".\n\n"
+            "Nếu bật memory và hỏi tiếp cùng `session_id`, app sẽ đưa lịch sử vào prompt "
+            "cho lượt sau."
+        )
+    return AIMessage(content=content)
+
+
+def build_model(provider: str, model_name: str, temperature: float):
+    """Khởi tạo chat model theo provider; Demo trả về RunnableLambda giả lập.
+
+    Thiếu API key hoặc thiếu tên model đều báo lỗi nêu ĐÚNG tên biến .env còn thiếu,
+    để người học biết phải sửa gì thay vì nhận một traceback từ tận trong SDK.
+    """
+    env = PROVIDER_ENV.get(provider)
+    if env is None:
+        return RunnableLambda(demo_reply)
+
+    key_var, model_var = env
+    if not os.getenv(key_var):
+        raise RuntimeError(f"Thiếu {key_var} trong file .env.")
+    if not model_name.strip():
+        raise RuntimeError(f"Thiếu {model_var} trong file .env.")
+
+    temperature = effective_temperature(model_name, temperature)
+    if provider == "OpenAI":
+        return ChatOpenAI(model=model_name, temperature=temperature)
+    return ChatGroq(model=model_name, temperature=temperature)
+
+
+def build_chain(
+    provider: str,
+    model_name: str,
+    temperature: float,
+    system_prompt: str,
+    context_enabled: bool,
+):
+    """Ghép prompt + model thành chain, có/không bọc memory tùy toggle.
+
+    Memory bật: prompt chừa ``MessagesPlaceholder("history")`` để lịch sử được chèn vào,
+    và bọc ``RunnableWithMessageHistory`` để tự đọc/ghi theo ``session_id``.
+    Memory tắt: chain thuần, invoke được ngay mà KHÔNG cần config session_id.
+    """
+    model = build_model(provider, model_name, temperature)
+
+    history_block = [MessagesPlaceholder(variable_name="history")] if context_enabled else []
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", system_prompt), *history_block, ("human", "{input}")]
+    )
+    chain = prompt | model
+
+    if not context_enabled:
+        return chain
+
+    return RunnableWithMessageHistory(
+        chain,
+        get_history,
+        input_messages_key="input",
+        history_messages_key="history",
+    )
+
+
+def invoke_chat(
+    user_input: str,
+    provider: str,
+    model_name: str,
+    temperature: float,
+    system_prompt: str,
+    context_enabled: bool,
+    session_id: str,
+    max_messages: int,
+) -> str:
+    """Chạy một lượt chat và trả về câu trả lời dạng text.
+
+    Memory bật: truyền ``session_id`` qua config để RunnableWithMessageHistory tự đọc/ghi
+    lịch sử, rồi trim NGAY tại đây — việc cắt lịch sử thuộc về nơi ghi, caller không phải
+    nhớ hộ. Memory tắt: invoke chain thuần, tuyệt đối không đụng vào lịch sử đã lưu.
+    """
+    chain = build_chain(provider, model_name, temperature, system_prompt, context_enabled)
+
+    if context_enabled:
+        result = chain.invoke(
+            {"input": user_input},
+            config={"configurable": {"session_id": session_id}},
+        )
+        trim_history(session_id, max_messages)
+    else:
+        result = chain.invoke({"input": user_input})
+
+    return message_text(result.content)
+
+
+def invoke_template(
+    provider: str,
+    model_name: str,
+    temperature: float,
+    source_lang: str,
+    target_lang: str,
+    tone: str,
+    text: str,
+) -> str:
+    """Chạy ví dụ ChatPromptTemplate nhiều biến: dịch ``text`` theo cấu hình.
+
+    Đây là bài học riêng về template (không memory) nên tự dựng prompt,
+    chỉ dùng chung build_model với phần chat.
+    """
+    model = build_model(provider, model_name, temperature)
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "Bạn là một dịch giả chuyên nghiệp. "
+                "Hãy dịch nội dung được cung cấp từ {source_lang} sang {target_lang} "
+                "với giọng văn {tone}. Chỉ trả về bản dịch, không giải thích gì thêm.",
+            ),
+            ("human", "{text}"),
+        ]
+    )
+    chain = prompt | model
+
+    result = chain.invoke(
+        {
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "tone": tone,
+            "text": text,
+        }
+    )
+    return message_text(result.content)
+
+
 def render_css() -> None:
     """Bơm CSS tùy biến cho header, sidebar và các thẻ trong Memory Viewer.
 
-    Màu dùng hàm CSS ``light-dark()``: Streamlit đặt ``color-scheme`` trên
-    container gốc (.stApp) theo theme đang hoạt động và đổi nó NGAY khi
-    người dùng chuyển theme (không rerun script), nên CSS tự khớp theme
-    mà không cần tải lại trang. Mỗi thuộc tính khai báo giá trị light
-    trước làm fallback cho trình duyệt chưa hỗ trợ light-dark().
+    Màu dùng hàm CSS ``light-dark()``: Streamlit đặt ``color-scheme`` trên container gốc
+    theo theme đang hoạt động và đổi nó NGAY khi người dùng chuyển theme (không rerun
+    script), nên CSS tự khớp theme mà không cần tải lại trang. Mỗi thuộc tính khai báo
+    giá trị light trước làm fallback cho trình duyệt chưa hỗ trợ light-dark().
     """
     st.markdown(
         """
@@ -239,216 +469,46 @@ def render_header(provider: str, session_id: str, context_enabled: bool) -> None
     )
 
 
-def provider_is_ready(provider: str) -> bool:
-    """Provider dùng được chưa? Demo luôn sẵn sàng; OpenAI/Groq cần key trong .env."""
-    env_key = PROVIDER_ENV_KEYS.get(provider)
-    return env_key is None or bool(os.getenv(env_key))
-
-
-def ensure_provider_ready(provider: str) -> bool:
-    """Guard dùng chung cho các tab: báo lỗi UI nếu provider thiếu API key."""
-    if provider_is_ready(provider):
-        return True
-    st.error("Provider hiện tại chưa có API key trong .env.")
-    return False
-
-
-def report_model_error(exc: Exception) -> None:
-    """Hiển thị lỗi gọi model theo một định dạng thống nhất giữa các tab."""
-    st.error(f"Không gọi được model: {exc}")
-
-
-def default_provider() -> str:
-    """Đọc provider mặc định từ LANGCHAIN_APP_PROVIDER; không hợp lệ thì về Demo."""
-    env_provider = os.getenv("LANGCHAIN_APP_PROVIDER", "Demo").strip().lower()
-    provider_map = {"demo": "Demo", "openai": "OpenAI", "groq": "Groq"}
-    return provider_map.get(env_provider, "Demo")
-
-
-def default_model(provider: str) -> str:
-    """Model mặc định theo provider (ưu tiên biến môi trường nếu có)."""
-    if provider == "OpenAI":
-        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    if provider == "Groq":
-        return os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-    return "demo-langchain"
-
-
-def demo_reply(prompt_value: Any) -> AIMessage:
-    """Giả lập câu trả lời của model cho provider Demo (offline, không cần key).
-
-    Đếm số lượt user có trong prompt để minh họa việc lịch sử đã thật sự được
-    truyền qua ``MessagesPlaceholder`` khi memory bật.
-    """
-    messages = prompt_value.to_messages()
-    user_messages = [message_text(msg.content)
-                     for msg in messages if isinstance(msg, HumanMessage)]
-    latest = user_messages[-1] if user_messages else ""
-    remembered = max(len(user_messages) - 1, 0)
-    if remembered:
-        content = (
-            f"Demo mode: mình nhận câu mới là: \"{latest}\".\n\n"
-            f"Trong prompt hiện tại có {remembered} lượt người dùng trước đó, nên đây là ví dụ memory đang được truyền qua `MessagesPlaceholder`."
-        )
-    else:
-        content = (
-            f"Demo mode: mình nhận câu này độc lập: \"{latest}\".\n\n"
-            "Nếu bật memory và hỏi tiếp cùng `session_id`, app sẽ đưa lịch sử vào prompt cho lượt sau."
-        )
-    return AIMessage(content=content)
-
-
-def build_model(provider: str, model_name: str, temperature: float):
-    """Khởi tạo chat model theo provider; Demo trả về RunnableLambda giả lập."""
-    if not provider_is_ready(provider):
-        raise RuntimeError(
-            f"Thiếu {PROVIDER_ENV_KEYS[provider]} trong file .env.")
-    if provider == "OpenAI":
-        return ChatOpenAI(model=model_name, temperature=temperature)
-    if provider == "Groq":
-        return ChatGroq(model=model_name, temperature=temperature)
-    return RunnableLambda(demo_reply)
-
-
-def build_chain(
-    provider: str,
-    model_name: str,
-    temperature: float,
-    system_prompt: str,
-    context_enabled: bool,
-):
-    """Ghép prompt + model thành chain, có/không bọc memory tùy toggle.
-
-    Nhánh memory bật giữ NGUYÊN pattern trong snippet đáp án ở tab Notebook Map
-    (system + MessagesPlaceholder("history") + human, bọc RunnableWithMessageHistory).
-    Nhánh memory tắt là chain thuần, không đọc/ghi lịch sử.
-    """
-    model = build_model(provider, model_name, temperature)
-
-    if context_enabled:
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt),
-                MessagesPlaceholder(variable_name="history"),
-                ("human", "{input}")
-            ]
-        )
-        chain = prompt | model
-
-        return RunnableWithMessageHistory(
-            chain,
-            get_history,
-            input_messages_key="input",
-            history_messages_key="history"
-        )
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", system_prompt),
-            ("human", "{input}")
-        ]
-    )
-    return prompt | model
-
-
-def invoke_chat(
-    user_input: str,
-    provider: str,
-    model_name: str,
-    temperature: float,
-    system_prompt: str,
-    context_enabled: bool,
-    session_id: str,
-    max_messages: int,
-) -> str:
-    """Chạy một lượt chat và trả về câu trả lời dạng text.
-
-    Memory bật: truyền ``session_id`` qua config để RunnableWithMessageHistory
-    tự đọc/ghi lịch sử, rồi trim ngay để store không vượt cap — việc cắt lịch sử
-    thuộc về nơi ghi, caller không phải nhớ. Memory tắt: invoke chain thuần,
-    không đụng vào lịch sử đã lưu.
-    """
-    chain = build_chain(provider, model_name, temperature,
-                        system_prompt, context_enabled)
-
-    if context_enabled:
-        result = chain.invoke(
-            {"input": user_input},
-            config={"configurable": {"session_id": session_id}},
-        )
-        trim_history(session_id, max_messages)
-    else:
-        result = chain.invoke({"input": user_input})
-
-    return message_text(result.content)
-
-
-def invoke_template(
-    provider: str,
-    model_name: str,
-    temperature: float,
-    source_lang: str,
-    target_lang: str,
-    tone: str,
-    text: str,
-) -> str:
-    """Chạy ví dụ ChatPromptTemplate nhiều biến: dịch ``text`` theo cấu hình.
-
-    Đây là bài học riêng về template (không memory) nên tự dựng prompt,
-    chỉ dùng chung build_model với phần chat.
-    """
-    model = build_model(provider, model_name, temperature)
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "Bạn là một dịch giả chuyên nghiệp. "
-                "Hãy dịch nội dung được cung cấp từ {source_lang} sang {target_lang} "
-                "với giọng văn {tone}. Chỉ trả về bản dịch, không giải thích gì thêm.",
-            ),
-            ("human", "{text}"),
-        ]
-    )
-    chain = prompt | model
-
-    result = chain.invoke(
-        {
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "tone": tone,
-            "text": text,
-        }
-    )
-    return message_text(result.content)
-
-
 def render_sidebar() -> dict[str, Any]:
     """Vẽ sidebar cấu hình và trả về config dùng chung cho các tab."""
     st.sidebar.title("Cấu hình")
 
-    provider_options = ["Demo", "OpenAI", "Groq"]
     provider = st.sidebar.selectbox(
         "Provider",
-        provider_options,
-        index=provider_options.index(default_provider()),
+        PROVIDER_OPTIONS,
+        index=PROVIDER_OPTIONS.index(default_provider()),
     )
 
-    # Widget không key: đổi provider -> đổi value mặc định -> Streamlit tự tạo
-    # widget mới (reset về default); các rerun khác giữ nguyên giá trị user sửa.
+    # Widget không key: đổi provider -> đổi value mặc định -> Streamlit tự tạo widget mới
+    # (reset về default); các rerun khác giữ nguyên giá trị người dùng đã sửa tay.
     model_name = st.sidebar.text_input(
         "Model",
         value=default_model(provider),
         disabled=provider == "Demo",
     )
-    temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
+
+    # Model bị khóa temperature: khóa luôn slider và hiển thị đúng giá trị sẽ chạy,
+    # thay vì để slider chỉ một đằng còn request gửi đi một nẻo.
+    locked = provider != "Demo" and not supports_temperature(model_name)
+    temperature = st.sidebar.slider(
+        "Temperature",
+        0.0,
+        1.0,
+        FIXED_TEMPERATURE if locked else 0.2,
+        0.05,
+        disabled=locked,
+        help=(
+            f"{model_name} chỉ chấp nhận temperature = {FIXED_TEMPERATURE:g}."
+            if locked
+            else None
+        ),
+    )
+
     context_enabled = st.sidebar.toggle("Dùng memory theo session", value=True)
-    max_turns = st.sidebar.slider(
-        "Giữ tối đa bao nhiêu lượt gần nhất", 2, 20, 8)
+    max_turns = st.sidebar.slider("Giữ tối đa bao nhiêu lượt gần nhất", 2, 20, 8)
 
     st.sidebar.divider()
-    session_id = st.sidebar.text_input(
-        "Session ID", value=st.session_state.session_id)
+    session_id = st.sidebar.text_input("Session ID", value=st.session_state.session_id)
     st.session_state.session_id = session_id.strip() or "demo-user"
 
     cols = st.sidebar.columns(2)
@@ -472,7 +532,8 @@ def render_sidebar() -> dict[str, Any]:
 
     if not provider_is_ready(provider):
         st.sidebar.warning(
-            f"Thiếu {PROVIDER_ENV_KEYS[provider]}. Chọn Demo hoặc thêm key vào .env.")
+            f"Thiếu {PROVIDER_ENV[provider][0]}. Chọn Demo hoặc thêm key vào .env."
+        )
 
     return {
         "provider": provider,
@@ -496,7 +557,8 @@ def render_chat_tab(config: dict[str, Any]) -> None:
         trim_history(config["session_id"], config["max_messages"])
     else:
         st.caption(
-            "Memory tắt: model không thấy lịch sử phía trên và lượt chat này sẽ không được lưu.")
+            "Memory tắt: model không thấy lịch sử phía trên và lượt chat này sẽ không được lưu."
+        )
 
     for message in history.messages:
         with st.chat_message(message_role(message)):
@@ -545,10 +607,13 @@ def render_template_tab(config: dict[str, Any]) -> None:
             value="LangChain giúp mình ghép prompt, model và memory thành một chain dễ quản lý.",
             height=140,
         )
-        submitted = st.form_submit_button(
-            "Chạy prompt template", use_container_width=True)
+        submitted = st.form_submit_button("Chạy prompt template", use_container_width=True)
 
     if not submitted:
+        return
+
+    if not text.strip():
+        st.warning("Nhập nội dung cần dịch trước đã.")
         return
 
     if not ensure_provider_ready(config["provider"]):
@@ -573,14 +638,14 @@ def render_template_tab(config: dict[str, Any]) -> None:
 
 def render_memory_tab(config: dict[str, Any]) -> None:
     """Tab Memory Viewer: xem lịch sử từng session và tải về dạng JSON."""
-    histories: dict[str,
-                    InMemoryChatMessageHistory] = st.session_state.histories
+    histories: dict[str, InMemoryChatMessageHistory] = st.session_state.histories
     session_ids = sorted(histories.keys()) or [config["session_id"]]
     selected = st.selectbox(
         "Chọn session",
         session_ids,
-        index=session_ids.index(
-            config["session_id"]) if config["session_id"] in session_ids else 0,
+        index=session_ids.index(config["session_id"])
+        if config["session_id"] in session_ids
+        else 0,
     )
     history = get_history(selected)
 
@@ -589,6 +654,8 @@ def render_memory_tab(config: dict[str, Any]) -> None:
     else:
         for message in history.messages:
             role = "Human" if message_role(message) == "user" else "AI"
+            # escape(): nội dung do model/người dùng sinh ra, mà thẻ này render với
+            # unsafe_allow_html=True — không escape là mở cửa cho HTML injection.
             safe_content = escape(message_text(message.content))
             st.markdown(
                 f"""
@@ -601,8 +668,7 @@ def render_memory_tab(config: dict[str, Any]) -> None:
             )
 
     export_rows = [
-        {"role": message_role(message),
-         "content": message_text(message.content)}
+        {"role": message_role(message), "content": message_text(message.content)}
         for message in history.messages
     ]
     st.download_button(
@@ -649,8 +715,7 @@ def main() -> None:
     init_state()
     render_css()
     config = render_sidebar()
-    render_header(config["provider"], config["session_id"],
-                  config["context_enabled"])
+    render_header(config["provider"], config["session_id"], config["context_enabled"])
 
     chat_tab, template_tab, memory_tab, notebook_tab = st.tabs(
         ["Chat Lab", "Prompt Template", "Memory Viewer", "Notebook Map"]

@@ -1,4 +1,5 @@
-# Môi trường ảo & biến môi trường (chứa API key — tuyệt đối không commit)
+# Môi trường ảo & biến môi trường (chứa API key — tuyệt đối không commit).
+# .env.example thì NGƯỢC LẠI: có commit, vì nó là bản mẫu rỗng key.
 .venv/
 .env
 
@@ -9,10 +10,8 @@ __pycache__/
 # Jupyter
 .ipynb_checkpoints/
 
-# Cache của test & tooling
+# Cache của pytest (repo không dùng ruff/mypy nên không liệt kê cache của chúng)
 .pytest_cache/
-.ruff_cache/
-.mypy_cache/
 
 # IDE
 .vscode/

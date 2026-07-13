@@ -4,6 +4,10 @@
 # core.autocrlf của từng máy, gây cảnh báo "change in line endings" không thật.
 * text=auto eol=lf
 
+# Notebook là JSON: ép LF để output đã lưu (một phần bài học) không bị Git
+# đánh dấu "modified" chỉ vì đổi EOL trên máy Windows.
+*.ipynb text eol=lf
+
 # Script Windows vẫn cần CRLF (một số công cụ/cmd.exe cũ đòi hỏi CRLF cho .bat)
 *.bat text eol=crlf
 *.ps1 text eol=crlf

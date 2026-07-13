@@ -2,26 +2,40 @@
 # (dòng trên bắt buộc: pip cũ trên Windows đọc file bằng cp1252 nếu thiếu khai báo,
 #  sẽ vỡ vì comment tiếng Việt trong file này)
 #
-# Pin đúng phiên bản môi trường khóa học đang chạy — KHÔNG nâng cấp tùy tiện:
-# LangChain 0.3+/1.x đổi API, code bài học sẽ không còn tương thích.
+# ============================================================================
+# KHÔNG NÂNG CẤP LANGCHAIN
+# ============================================================================
+# Pin đúng phiên bản môi trường khóa học đang chạy. LangChain 0.3+/1.x đổi API,
+# code bài học sẽ không còn tương thích.
 #
-# Lưu ý: cố tình KHÔNG dùng metapackage `langchain` — code chỉ import
-# langchain_core / langchain_community / langchain_openai / langchain_groq,
-# và langchain 0.1.0 ghim langsmith<0.1 xung đột với langchain-core 0.1.53
-# (pip mới sẽ báo ResolutionImpossible nếu cài chung).
+# Cố tình KHÔNG dùng metapackage `langchain`: code chỉ import langchain_core /
+# langchain_openai / langchain_groq (riêng langchain_community chỉ xuất hiện
+# trong intro_to_groq.ipynb), và `langchain 0.1.0` ghim `langsmith<0.1` — xung đột
+# với langchain-core 0.1.53, pip sẽ báo ResolutionImpossible nếu cài chung.
+#
+# Cảnh báo cho người nâng cấp: langchain-openai 0.0.2 LUÔN gửi kèm temperature
+# (mặc định 0.7 của chính nó). Với model họ gpt-5/o-series — vốn chỉ chấp nhận
+# temperature = 1 — bỏ trống tham số không cứu được, phải ép đúng 1.
+# streamlit_app.py xử lý việc này trong effective_temperature().
+
+# --- LangChain (lõi bài học) ---
 langchain-core==0.1.53
-langchain-community==0.0.38
+langchain-community==0.0.38     # chỉ dùng trong intro_to_groq.ipynb (ChatMessageHistory)
 langchain-openai==0.0.2
 langchain-groq==0.0.1
-langsmith==0.1.147
+langsmith==0.1.147              # phải khớp langchain-core 0.1.53
+
+# --- SDK provider ---
 openai==1.109.1
 groq==0.37.1
-tiktoken==0.5.2
-python-dotenv==1.2.2
-streamlit==1.59.0
+tiktoken==0.5.2                 # langchain-openai bắt buộc
 
-# Notebook (chạy qua kernel của editor, ví dụ VS Code)
+# --- App ---
+streamlit==1.59.0
+python-dotenv==1.2.2            # nạp .env (API key + tên model)
+
+# --- Notebook (chạy qua kernel của editor, ví dụ VS Code) ---
 ipykernel==7.3.0
 
-# Test
+# --- Test ---
 pytest==9.1.1
